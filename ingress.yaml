@@ -1,0 +1,89 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: streamhive-ingress
+  annotations:
+    # Basic API Gateway features with NGINX
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/proxy-body-size: "1g"  # Allow large video uploads
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    
+    # Rate limiting (API Gateway feature)
+    nginx.ingress.kubernetes.io/rate-limit: "100"  # 100 req/min per IP
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    
+    # CORS for video streaming
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    
+    # Security headers (API Gateway feature)
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header X-Request-ID $request_id;
+      add_header X-API-Gateway "nginx-ingress";
+      add_header X-Content-Type-Options nosniff;
+      
+    # Path-specific rate limits
+    nginx.ingress.kubernetes.io/server-snippet: |
+      location ~* ^/api/v1/upload {
+        limit_req zone=upload burst=5 nodelay;
+      }
+      location ~* ^/api/v1/playback {
+        limit_req zone=playback burst=50 nodelay;
+      }
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: streamhive.local  # Replace with your domain
+    http:
+      paths:
+      # Frontend
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend-service
+            port:
+              number: 80
+      
+      # API Routes - All under single domain
+      - path: /api/v1/upload
+        pathType: Prefix
+        backend:
+          service:
+            name: upload-service
+            port:
+              number: 80
+              
+      - path: /api/v1/videos
+        pathType: Prefix
+        backend:
+          service:
+            name: video-catalog-service
+            port:
+              number: 80
+              
+      - path: /playback
+        pathType: Prefix
+        backend:
+          service:
+            name: playback-service
+            port:
+              number: 80
+
+---
+# If you need LoadBalancer type (cloud environments)
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-ingress-controller
+spec:
+  type: LoadBalancer  # Creates cloud load balancer (AWS ALB, GCP LB, etc.)
+  ports:
+  - port: 80
+    targetPort: 80
+  - port: 443
+    targetPort: 443
+  selector:
+    app: nginx-ingress-controller

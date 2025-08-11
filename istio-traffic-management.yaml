@@ -1,0 +1,95 @@
+# Destination Rules - Configure load balancing and circuit breakers
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: upload-service-dr
+  namespace: default
+spec:
+  host: upload-service
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN  # Best for file uploads
+    connectionPool:
+      tcp:
+        maxConnections: 50
+      http:
+        http1MaxPendingRequests: 20
+        maxRequestsPerConnection: 10
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: video-catalog-service-dr
+  namespace: default
+spec:
+  host: video-catalog-service
+  trafficPolicy:
+    loadBalancer:
+      simple: ROUND_ROBIN  # Good for API calls
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 50
+        maxRequestsPerConnection: 2
+        h2MaxRequests: 1000
+    circuitBreaker:
+      consecutiveGatewayErrors: 3
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: playback-service-dr
+  namespace: default
+spec:
+  host: playback-service
+  trafficPolicy:
+    loadBalancer:
+      consistentHash:
+        httpCookie:
+          name: "session-id"  # Session affinity for cache locality
+          ttl: 300s
+    connectionPool:
+      tcp:
+        maxConnections: 200  # High for video streaming
+      http:
+        http1MaxPendingRequests: 100
+        maxRequestsPerConnection: 10
+        idleTimeout: 60s
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+
+---
+# Service Monitor for Prometheus metrics collection
+apiVersion: v1
+kind: Service
+metadata:
+  name: istio-proxy-metrics
+  namespace: default
+  labels:
+    app: istio-proxy-metrics
+spec:
+  ports:
+  - name: http-monitoring
+    port: 15090
+    targetPort: 15090
+    protocol: TCP
+  selector:
+    app: upload-service  # Collect metrics from upload service sidecars
+  type: ClusterIP

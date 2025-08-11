@@ -1,0 +1,90 @@
+# Observability - Telemetry configuration
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: streamhive-metrics
+  namespace: streamhive
+spec:
+  metrics:
+  - providers:
+    - name: prometheus
+  - overrides:
+    - match:
+        metric: ALL_METRICS
+      tagOverrides:
+        destination_service_name:
+          value: "streamhive-{{ .destination_workload | default \"unknown\" }}"
+        source_app:
+          value: "{{ .source_app | default \"unknown\" }}"
+        api_version:
+          value: "{{ .request_headers['x-api-version'] | default \"v1\" }}"
+
+---
+# Access Logging
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: streamhive-access-logging
+  namespace: streamhive
+spec:
+  accessLogging:
+  - providers:
+    - name: otel
+  - filter:
+      expression: 'response.code >= 400'  # Log only errors and above
+
+---
+# Distributed Tracing
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: streamhive-tracing
+  namespace: streamhive
+spec:
+  tracing:
+  - providers:
+    - name: jaeger
+  - randomSamplingPercentage: 1.0  # 1% sampling for production
+
+---
+# Custom metrics for video streaming
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: video-streaming-metrics
+  namespace: streamhive
+spec:
+  metrics:
+  - providers:
+    - name: prometheus
+  - overrides:
+    - match:
+        metric: requests_total
+        mode: CLIENT
+      disabled: false
+      tags:
+        video_quality:
+          value: "{{ .request_headers['x-video-quality'] | default \"unknown\" }}"
+        upload_size:
+          value: "{{ .request_headers['content-length'] | default \"0\" }}"
+        user_id:
+          value: "{{ .request_headers['x-user-id'] | default \"anonymous\" }}"
+
+---
+# ServiceMonitor for Prometheus scraping
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: streamhive-istio-proxy
+  namespace: streamhive
+  labels:
+    app: streamhive
+spec:
+  selector:
+    matchLabels:
+      app: upload-service
+  endpoints:
+  - port: http-monitoring
+    interval: 15s
+    path: /stats/prometheus
+    scheme: http

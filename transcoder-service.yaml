@@ -1,0 +1,120 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: transcoder-config
+  namespace: streamhive
+data:
+  LOG_LEVEL: "info"
+  AMQP_EXCHANGE: "streamhive"
+  AMQP_UPLOAD_ROUTING_KEY: "video.uploaded"
+  AMQP_TRANSCODED_ROUTING_KEY: "video.transcoded"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transcoder-service
+  namespace: streamhive
+  labels:
+    app: transcoder-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: transcoder-service
+  template:
+    metadata:
+      labels:
+        app: transcoder-service
+      annotations:
+        sidecar.istio.io/inject: "true"
+    spec:
+      containers:
+        - name: transcoder-service
+          image: transcoder-service:local
+          imagePullPolicy: Never
+          env:
+            - name: AMQP_URL
+              value: "amqp://guest:guest@rabbitmq.streamhive.svc.cluster.local:5672/"
+            - name: AMQP_EXCHANGE
+              valueFrom:
+                configMapKeyRef:
+                  name: transcoder-config
+                  key: AMQP_EXCHANGE
+            - name: AMQP_UPLOAD_ROUTING_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: transcoder-config
+                  key: AMQP_UPLOAD_ROUTING_KEY
+            - name: AMQP_TRANSCODED_ROUTING_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: transcoder-config
+                  key: AMQP_TRANSCODED_ROUTING_KEY
+            - name: AMQP_QUEUE
+              value: "video_transcode_queue"
+            - name: AZURE_STORAGE_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: azure-storage-secrets
+                  key: AZURE_STORAGE_ACCOUNT_NAME
+            - name: AZURE_STORAGE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: azure-storage-secrets
+                  key: AZURE_STORAGE_ACCOUNT_KEY
+            - name: AZURE_BLOB_CONTAINER
+              value: "uploadservicecontainer"
+            - name: CONCURRENCY
+              value: "1"
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: transcoder-config
+                  key: LOG_LEVEL
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          # Health checks for the transcoder service
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "ps aux | grep '[t]ranscoder' || exit 1"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "ps aux | grep '[t]ranscoder' || exit 1"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: transcoder-service
+  namespace: streamhive
+  labels:
+    app: transcoder-service
+spec:
+  selector:
+    app: transcoder-service
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+  type: ClusterIP

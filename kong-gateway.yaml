@@ -1,0 +1,147 @@
+# Kong API Gateway Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kong-config
+data:
+  kong.yaml: |
+    _format_version: "3.0"
+    
+    # Services (your microservices)
+    services:
+    - name: upload-service
+      url: http://upload-service.default.svc.cluster.local:80
+      plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+          secret_is_base64: false
+      - name: rate-limiting
+        config:
+          minute: 100  # 100 uploads per minute per user
+          policy: local
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 1073741824  # 1GB for video uploads
+    
+    - name: catalog-service
+      url: http://video-catalog-service.default.svc.cluster.local:80
+      plugins:
+      - name: jwt
+        config:
+          key_claim_name: iss
+      - name: rate-limiting
+        config:
+          minute: 1000  # Higher limit for catalog browsing
+    
+    - name: playback-service
+      url: http://playback-service.default.svc.cluster.local:80
+      plugins:
+      - name: rate-limiting
+        config:
+          second: 50  # High throughput for video streaming
+      - name: cors
+        config:
+          origins: ["*"]
+          methods: ["GET", "HEAD", "OPTIONS"]
+    
+    # Routes (API endpoints)
+    routes:
+    - name: upload-api
+      service: upload-service
+      paths: ["/api/v1/upload"]
+      methods: ["POST", "GET"]
+      
+    - name: catalog-api
+      service: catalog-service
+      paths: ["/api/v1/videos"]
+      methods: ["GET", "POST", "PUT", "DELETE"]
+      
+    - name: playback-api
+      service: playback-service
+      paths: ["/api/v1/playback"]
+      methods: ["GET", "HEAD"]
+      strip_path: false
+    
+    # Global plugins
+    plugins:
+    - name: correlation-id
+      config:
+        header_name: X-Request-ID
+    - name: prometheus
+      config:
+        per_consumer: true
+    - name: request-transformer
+      config:
+        add:
+          headers:
+            - "X-API-Gateway: kong"
+            - "X-Request-Time: $(date)"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kong-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kong-gateway
+  template:
+    metadata:
+      labels:
+        app: kong-gateway
+    spec:
+      containers:
+      - name: kong
+        image: kong:3.4-alpine
+        env:
+        - name: KONG_DATABASE
+          value: "off"
+        - name: KONG_DECLARATIVE_CONFIG
+          value: "/opt/kong/kong.yaml"
+        - name: KONG_PROXY_ACCESS_LOG
+          value: "/dev/stdout"
+        - name: KONG_ADMIN_ACCESS_LOG
+          value: "/dev/stdout"
+        - name: KONG_PROXY_ERROR_LOG
+          value: "/dev/stderr"
+        - name: KONG_ADMIN_ERROR_LOG
+          value: "/dev/stderr"
+        - name: KONG_ADMIN_LISTEN
+          value: "0.0.0.0:8001"
+        ports:
+        - containerPort: 8000  # Proxy port
+        - containerPort: 8001  # Admin port
+        volumeMounts:
+        - name: kong-config
+          mountPath: /opt/kong
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: kong-config
+        configMap:
+          name: kong-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong-gateway
+spec:
+  selector:
+    app: kong-gateway
+  ports:
+  - name: proxy
+    port: 80
+    targetPort: 8000
+  - name: admin
+    port: 8001
+    targetPort: 8001
+  type: ClusterIP

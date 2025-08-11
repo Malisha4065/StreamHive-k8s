@@ -1,0 +1,173 @@
+# Istio Gateway - Entry point for external traffic
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: streamhive-gateway
+  namespace: default
+spec:
+  selector:
+    istio: ingressgateway # Use Istio's default ingress gateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"  # Accept any hostname (for development)
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    hosts:
+    - "*"
+    tls:
+      mode: SIMPLE
+      credentialName: streamhive-tls  # TLS certificate (optional for dev)
+
+---
+# Virtual Service - API routing and traffic management
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: streamhive-api
+  namespace: default
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - streamhive-gateway
+  http:
+  
+  # Playback API - Optimized for video streaming (must come before frontend routes)
+  - match:
+    - uri:
+        prefix: /playback/playback
+    rewrite:
+      uri: /playback
+    route:
+    - destination:
+        host: playback-service.streamhive.svc.cluster.local
+        port:
+          number: 80
+    headers:
+      request:
+        add:
+          x-service: "playback"
+      response:
+        add:
+          cache-control: "public, max-age=300"  # 5 min cache for video segments
+          x-cdn-cache: "istio"
+    retries:
+      attempts: 2
+      perTryTimeout: 30s
+      retryOn: 5xx,reset
+      
+  # Playback API fallback
+  - match:
+    - uri:
+        prefix: /playback
+    route:
+    - destination:
+        host: playback-service.streamhive.svc.cluster.local
+        port:
+          number: 80
+    headers:
+      request:
+        add:
+          x-service: "playback"
+      response:
+        add:
+          cache-control: "public, max-age=300"  # 5 min cache for video segments
+          x-cdn-cache: "istio"
+    retries:
+      attempts: 2
+      perTryTimeout: 30s
+      retryOn: 5xx,reset
+
+  # Frontend static files
+  - match:
+    - uri:
+        exact: /
+    - uri:
+        prefix: /assets/
+    - uri:
+        regex: ".*\\.(js|css|png|jpg|ico|svg)$"
+    route:
+    - destination:
+        host: frontend-service.streamhive.svc.cluster.local
+        port:
+          number: 80
+    headers:
+      response:
+        add:
+          cache-control: "public, max-age=3600"
+          x-served-by: "istio-gateway"
+  
+  # Upload API - High timeout for large video files
+  - match:
+    - uri:
+        prefix: /api/v1/upload
+    route:
+    - destination:
+        host: upload-service.streamhive.svc.cluster.local
+        port:
+          number: 80
+    timeout: 300s  # 5 minutes for video uploads
+    headers:
+      request:
+        add:
+          x-api-version: "v1"
+          x-service: "upload"
+    fault:
+      delay:
+        percentage:
+          value: 0.1  # 0.1% requests get delay for chaos testing
+        fixedDelay: 2s
+    retries:
+      attempts: 3
+      perTryTimeout: 100s
+      retryOn: gateway-error,connect-failure,refused-stream
+      
+  # Video Catalog API
+  - match:
+    - uri:
+        prefix: /api/v1/videos
+    route:
+    - destination:
+        host: video-catalog-service.streamhive.svc.cluster.local
+        port:
+          number: 80
+    headers:
+      request:
+        add:
+          x-api-version: "v1"
+          x-service: "catalog"
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+      retryOn: 5xx,reset,connect-failure,refused-stream
+      
+  # Health check endpoints
+  - match:
+    - uri:
+        prefix: /health
+    route:
+    - destination:
+        host: upload-service.streamhive.svc.cluster.local
+        port:
+          number: 80
+      weight: 33
+    - destination:
+        host: video-catalog-service.streamhive.svc.cluster.local
+        port:
+          number: 80
+      weight: 33  
+    - destination:
+        host: playback-service.streamhive.svc.cluster.local
+        port:
+          number: 80
+      weight: 34
+    headers:
+      request:
+        add:
+          x-health-check: "istio"

@@ -1,0 +1,32 @@
+# Azure Storage Configuration for StreamHive
+# ==========================================
+# 
+# You need to update this file with your actual Azure Storage credentials
+# and then apply it to your Kubernetes cluster.
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: azure-storage-secrets
+  namespace: streamhive
+type: Opaque
+stringData:
+  # Replace these with your actual Azure Storage credentials
+  AZURE_STORAGE_ACCOUNT_NAME: "YOUR_STORAGE_ACCOUNT_NAME"
+  AZURE_STORAGE_ACCOUNT_KEY: "YOUR_STORAGE_ACCOUNT_KEY"
+  # OR use connection string instead (comment out the above two lines if using this)
+  # AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=https;AccountName=YOUR_ACCOUNT;AccountKey=YOUR_KEY;EndpointSuffix=core.windows.net"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: azure-storage-config
+  namespace: streamhive
+data:
+  # Your container names (update these to match your actual containers)
+  AZURE_STORAGE_RAW_CONTAINER: "streamhive-raw-videos"
+  AZURE_STORAGE_PROCESSED_CONTAINER: "streamhive-processed-videos"
+  
+  # Optional: Custom endpoint if using different Azure regions
+  # AZURE_STORAGE_ENDPOINT: "https://youraccount.blob.core.windows.net"

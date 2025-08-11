@@ -1,0 +1,98 @@
+# Istio Virtual Service for API Gateway
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: streamhive-gateway
+spec:
+  hosts:
+  - streamhive.com
+  gateways:
+  - streamhive-gateway
+  http:
+  
+  # Upload API with authentication
+  - match:
+    - uri:
+        prefix: /api/v1/upload
+    route:
+    - destination:
+        host: upload-service
+        port:
+          number: 80
+    headers:
+      request:
+        add:
+          x-api-version: v1
+    fault:
+      delay:
+        percentage:
+          value: 0.1  # 0.1% requests get 5s delay for testing
+        fixedDelay: 5s
+    timeout: 300s  # Long timeout for video uploads
+    
+  # Catalog API with rate limiting
+  - match:
+    - uri:
+        prefix: /api/v1/videos
+    route:
+    - destination:
+        host: video-catalog-service
+        port:
+          number: 80
+    headers:
+      request:
+        add:
+          x-service: catalog
+          
+  # Playback API with caching
+  - match:
+    - uri:
+        prefix: /api/v1/playback
+    route:
+    - destination:
+        host: playback-service
+        port:
+          number: 80
+    headers:
+      response:
+        add:
+          cache-control: "public, max-age=300"
+          x-cache-service: istio
+
+---
+# Rate limiting with Istio
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: upload-rate-limit
+spec:
+  selector:
+    matchLabels:
+      app: upload-service
+  rules:
+  - from:
+    - source:
+        requestPrincipals: ["*"]
+  - to:
+    - operation:
+        methods: ["POST"]
+        paths: ["/api/v1/upload"]
+    when:
+    - key: source.ip
+      values: ["10.0.0.0/8"]  # Only internal traffic
+
+---
+# JWT Authentication
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+spec:
+  selector:
+    matchLabels:
+      app: upload-service
+  jwtRules:
+  - issuer: "streamhive.com"
+    jwksUri: "https://streamhive.com/.well-known/jwks.json"
+    audiences:
+    - "streamhive-api"

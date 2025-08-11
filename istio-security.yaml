@@ -1,0 +1,132 @@
+# JWT Authentication Policy for protected endpoints
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: streamhive-jwt
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: upload-service  # Apply to upload service
+  jwtRules:
+  - issuer: "streamhive.com"
+    audiences:
+    - "streamhive-api"
+    # For development, we'll verify JWT signature locally
+    # In production, use JWKS endpoint: jwksUri: "https://your-domain/.well-known/jwks.json"
+    # For now, using static key (in production, use proper JWKS)
+    jwks: |
+      {
+        "keys": [
+          {
+            "kty": "oct",
+            "k": "ZGV2c2VjcmV0",
+            "alg": "HS256"
+          }
+        ]
+      }
+
+---
+# Authorization Policy - Enforce authentication for upload endpoints
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: upload-auth-policy
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: upload-service
+  rules:
+  - from:
+    - source:
+        requestPrincipals: ["*"]  # Must have valid JWT
+    to:
+    - operation:
+        methods: ["POST"]
+        paths: ["/api/v1/upload"]
+  - to:  # Allow unauthenticated access to health checks
+    - operation:
+        methods: ["GET"]
+        paths: ["/health"]
+
+---
+# Rate Limiting for Video Upload Service
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: upload-rate-limit
+  namespace: default
+spec:
+  workloadSelector:
+    labels:
+      app: upload-service
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.local_ratelimit
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+          value:
+            stat_prefix: upload_rate_limiter
+            token_bucket:
+              max_tokens: 100
+              tokens_per_fill: 10
+              fill_interval: 60s  # 10 uploads per minute
+            filter_enabled:
+              runtime_key: upload_rate_limit_enabled
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            filter_enforced:
+              runtime_key: upload_rate_limit_enforced
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+
+---
+# Rate Limiting for Video Streaming/Playback
+apiVersion: networking.istio.io/v1alpha3  
+kind: EnvoyFilter
+metadata:
+  name: playback-rate-limit
+  namespace: default
+spec:
+  workloadSelector:
+    labels:
+      app: playback-service
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.local_ratelimit
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+          value:
+            stat_prefix: playback_rate_limiter
+            token_bucket:
+              max_tokens: 1000
+              tokens_per_fill: 100
+              fill_interval: 1s  # 100 requests per second (high for streaming)
+            filter_enabled:
+              runtime_key: playback_rate_limit_enabled
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
